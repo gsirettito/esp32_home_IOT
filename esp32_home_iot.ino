@@ -5,6 +5,7 @@
 #include "SPIFFS.h"
 #include <Arduino_JSON.h>
 #include <Regexp.h>
+#include <DNSServer.h>
 
 // Search for parameter in HTTP POST request
 const char *PARAM_INPUT_1 = "ssid";
@@ -22,6 +23,8 @@ String gw;
 // File paths to save input values permanently
 const char *wificonfigPath = "/wificonfig.json";
 
+const char *softAP_ssid = "ESP32-WIFI-MANAGER";
+
 IPAddress localIP;
 // IPAddress localIP(192, 168, 1, 200); // hardcoded
 
@@ -29,6 +32,16 @@ IPAddress localIP;
 IPAddress localGateway;
 // IPAddress localGateway(192, 168, 1, 1); //hardcoded
 IPAddress subnet(255, 255, 0, 0);
+
+// The access points IP address and net mask
+// It uses the default Google DNS IP address 8.8.8.8 to capture all
+// Android dns requests
+IPAddress apIP(8, 8, 8, 8);
+IPAddress netMsk(255, 255, 255, 0);
+
+// DNS server
+const byte DNS_PORT = 53;
+DNSServer dnsServer;
 
 // Timer variables
 unsigned long previousMillis = 0;
@@ -142,6 +155,85 @@ bool initWiFi()
     return true;
 }
 
+// check if this string is an IP address
+boolean isIp(String str)
+{
+    for (size_t i = 0; i < str.length(); i++)
+    {
+        int c = str.charAt(i);
+        if (c != '.' && (c < '0' || c > '9'))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+String toStringIp(IPAddress ip)
+{
+    String res = "";
+    for (int i = 0; i < 3; i++)
+    {
+        res += String((ip >> (8 * i)) & 0xFF) + ".";
+    }
+    res += String(((ip >> 8 * 3)) & 0xFF);
+    return res;
+}
+
+// checks if the request is for the controllers IP, if not we redirect automatically to the
+// captive portal
+boolean captivePortal()
+{
+    if (!isIp(server.hostHeader()))
+    {
+        Serial.println("Request redirected to captive portal");
+        server.sendHeader("Location", String("http://") + toStringIp(server.client().localIP()), true);
+        server.send(302, "text/plain", "");
+        server.client().stop();
+        return true;
+    }
+    return false;
+}
+
+void handleRoot()
+{
+    if (captivePortal())
+    {
+        return;
+    }
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
+    server.sendHeader("Expires", "-1");
+
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+              { request->send(SPIFFS, "/wifimanager.html", "text/html"); });
+}
+
+void handleNotFound()
+{
+    if (captivePortal())
+    {
+        return;
+    }
+    String message = F("File Not Found\n\n");
+    message += F("URI: ");
+    message += server.uri();
+    message += F("\nMethod: ");
+    message += (server.method() == HTTP_GET) ? "GET" : "POST";
+    message += F("\nArguments: ");
+    message += server.args();
+    message += F("\n");
+
+    for (uint8_t i = 0; i < server.args(); i++)
+    {
+        message += String(F(" ")) + server.argName(i) + F(": ") + server.arg(i) + F("\n");
+    }
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
+    server.sendHeader("Expires", "-1");
+    server.send(404, "text/plain", message);
+}
+
 // Replaces placeholder with LED state value
 String processor(const String &var)
 {
@@ -208,15 +300,22 @@ void setup()
         // Connect to Wi-Fi network with SSID and password
         Serial.println("Setting AP (Access Point)");
         // NULL sets an open Access Point
-        WiFi.softAP("ESP32-WIFI-MANAGER", NULL);
+        WiFi.softAPConfig(apIP, apIP, netMsk);
+        // its an open WLAN access point without a password parameter
+        WiFi.softAP(softAP_ssid);
+        delay(1000);
 
         IPAddress IP = WiFi.softAPIP();
         Serial.print("AP IP address: ");
         Serial.println(IP);
 
+        /* Setup the DNS server redirecting all the domains to the apIP */
+        dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+        dnsServer.start(DNS_PORT, "*", apIP);
+
         // Web Server Root URL
-        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-                  { request->send(SPIFFS, "/wifimanager.html", "text/html"); });
+        /* Setup the web server */
+        server.on("/", handleRoot);
 
         server.serveStatic("/", SPIFFS, "/");
         server.on("/", HTTP_POST, [](AsyncWebServerRequest *request)
@@ -269,6 +368,9 @@ void setup()
       request->send(200, "text/plain", "Done. ESP will restart, connect to your router and go to IP address: " + ip);
       delay(3000);
       ESP.restart(); });
+
+        server.on("/generate_204", handleRoot);
+        server.onNotFound(handleNotFound);
         server.begin();
     }
 }
@@ -315,10 +417,8 @@ void loop()
             Serial.println("Config saved!");
         }
     }
-    if ((millis() - lastTime) > timerDelay)
-    {
-        // Send Events to the client with the Sensor Readings Every 10 seconds
-        events.send("ping", NULL, millis());
-        lastTime = millis();
-    }
+    // DNS
+    dnsServer.processNextRequest();
+    // HTTP
+    server.handleClient();
 }
