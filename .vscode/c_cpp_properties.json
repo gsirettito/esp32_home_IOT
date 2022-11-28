@@ -208,6 +208,7 @@
                 "C:\\Users\\SiretT\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\2.0.3-RC1\\libraries\\FS\\src",
                 "C:\\Users\\SiretT\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\2.0.3-RC1\\libraries\\SPIFFS\\src",
                 "C:\\Users\\SiretT\\Documents\\Arduino\\libraries\\Arduino_JSON-0.2.0\\src",
+                "C:\\Users\\SiretT\\Documents\\Arduino\\libraries\\Regexp-0.1.0\\src",
                 "c:\\users\\sirett\\appdata\\local\\arduino15\\packages\\esp32\\tools\\xtensa-esp32-elf-gcc\\gcc8_4_0-esp-2021r2-patch3\\xtensa-esp32-elf\\include\\c++\\8.4.0",
                 "c:\\users\\sirett\\appdata\\local\\arduino15\\packages\\esp32\\tools\\xtensa-esp32-elf-gcc\\gcc8_4_0-esp-2021r2-patch3\\xtensa-esp32-elf\\include\\c++\\8.4.0\\xtensa-esp32-elf",
                 "c:\\users\\sirett\\appdata\\local\\arduino15\\packages\\esp32\\tools\\xtensa-esp32-elf-gcc\\gcc8_4_0-esp-2021r2-patch3\\xtensa-esp32-elf\\include\\c++\\8.4.0\\backward",

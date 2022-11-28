@@ -4,9 +4,35 @@
 #include <ESPAsyncWebServer.h>
 #include "SPIFFS.h"
 #include <Arduino_JSON.h>
+#include <Regexp.h>
 
-const char *ssid = "TP-LINK_ESP82";
-const char *password = "51127394";
+// Search for parameter in HTTP POST request
+const char *PARAM_INPUT_1 = "ssid";
+const char *PARAM_INPUT_2 = "pass";
+const char *PARAM_INPUT_3 = "ip";
+const char *PARAM_INPUT_4 = "gateway";
+
+// Variables to save values from HTML form
+String wificonfig;
+String ssid;
+String pass;
+String ip;
+String gw;
+
+// File paths to save input values permanently
+const char *wificonfigPath = "/wificonfig.json";
+
+IPAddress localIP;
+// IPAddress localIP(192, 168, 1, 200); // hardcoded
+
+// Set your Gateway IP address
+IPAddress localGateway;
+// IPAddress localGateway(192, 168, 1, 1); //hardcoded
+IPAddress subnet(255, 255, 0, 0);
+
+// Timer variables
+unsigned long previousMillis = 0;
+const long interval = 10000; // interval to wait for Wi-Fi connection (milliseconds)
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -14,12 +40,18 @@ AsyncWebServer server(80);
 // Create an Event Source on /events
 AsyncEventSource events("/events");
 
-// Json Variable to Hold Sensor Readings
-JSONVar readings;
+// Json Variable to manage wifi config
+JSONVar json;
 
 // Timer variables
 unsigned long lastTime = 0;
 unsigned long timerDelay = 10000;
+
+// Set LED GPIO
+const int ledPin = 2;
+// Stores LED state
+
+String ledState;
 
 // Initialize SPIFFS
 void initSPIFFS()
@@ -32,49 +64,257 @@ void initSPIFFS()
         Serial.println("SPIFFS mounted successfully");
 }
 
-// Initialize WiFi
-void initWiFi()
+// Read File from SPIFFS
+String readFile(fs::FS &fs, const char *path)
 {
+    Serial.printf("Reading file: %s\r\n", path);
+
+    File file = fs.open(path);
+    if (!file || file.isDirectory())
+    {
+        Serial.println("- failed to open file for reading");
+        return String();
+    }
+
+    String fileContent;
+    while (file.available())
+    {
+        fileContent = file.readStringUntil('\n');
+        break;
+    }
+    return fileContent;
+}
+
+// Write file to SPIFFS
+void writeFile(fs::FS &fs, const char *path, const char *message)
+{
+    Serial.printf("Writing file: %s\r\n", path);
+
+    File file = fs.open(path, FILE_WRITE);
+    if (!file)
+    {
+        Serial.println("- failed to open file for writing");
+        return;
+    }
+    if (file.print(message))
+    {
+        Serial.println("- file written");
+    }
+    else
+    {
+        Serial.println("- frite failed");
+    }
+}
+
+// Initialize WiFi
+bool initWiFi()
+{
+    if (ssid == "" || ip == "")
+    {
+        Serial.println("Undefined SSID or IP address.");
+        return false;
+    }
+
     WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-    Serial.print("Connecting to WiFi ..");
+    localIP.fromString(ip.c_str());
+    localGateway.fromString(gw.c_str());
+    if (!WiFi.config(localIP, localGateway, subnet))
+    {
+        Serial.println("STA Failed to configure");
+        return false;
+    }
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    Serial.print("Connecting to WiFi...");
+
+    unsigned long currentMillis = millis();
+    previousMillis = currentMillis;
+
     while (WiFi.status() != WL_CONNECTED)
     {
-        Serial.print('.');
-        delay(1000);
+        currentMillis = millis();
+        if (currentMillis - previousMillis >= interval)
+        {
+            Serial.println("Failed to connect.");
+            return false;
+        }
     }
     Serial.println(WiFi.localIP());
+    return true;
+}
+
+// Replaces placeholder with LED state value
+String processor(const String &var)
+{
+    if (var == "STATE")
+    {
+        if (digitalRead(ledPin))
+        {
+            ledState = "ON";
+        }
+        else
+        {
+            ledState = "OFF";
+        }
+        return ledState;
+    }
+    return String();
 }
 
 void setup()
 {
     Serial.begin(115200);
     Serial.println("Welcome to home automation IOT");
-    initWiFi();
     initSPIFFS();
 
-    // Web Server Root URL
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-              { request->send(SPIFFS, "/index.html", "text/html"); });
+    // Set GPIO 2 as an OUTPUT
+    pinMode(ledPin, OUTPUT);
+    digitalWrite(ledPin, LOW);
 
-    server.serveStatic("/", SPIFFS, "/");
+    // Load values saved in SPIFFS
+    wificonfig = readFile(SPIFFS, wificonfigPath);
+    json = JSON.parse(wificonfig);
+    ssid = (const char *)json["ssid"];
+    pass = (const char *)json["pass"];
+    ip = (const char *)json["ip"];
+    gw = (const char *)json["gw"];
+    Serial.println(ssid);
+    Serial.println(pass);
+    Serial.println(ip);
+    Serial.println(gw);
 
-    events.onConnect([](AsyncEventSourceClient *client)
-                     {
-    if(client->lastId()){
-      Serial.printf("Client reconnected! Last message ID that it got is: %u\n", client->lastId());
+    if (initWiFi())
+    {
+        // Web Server Root URL
+        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+                  { request->send(SPIFFS, "/index.html", "text/html"); });
+
+        server.serveStatic("/", SPIFFS, "/");
+
+        // Route to set GPIO state to HIGH
+        server.on("/on", HTTP_GET, [](AsyncWebServerRequest *request)
+                  {
+      digitalWrite(ledPin, HIGH);
+      request->send(SPIFFS, "/index.html", "text/html", false, processor); });
+
+        // Route to set GPIO state to LOW
+        server.on("/off", HTTP_GET, [](AsyncWebServerRequest *request)
+                  {
+      digitalWrite(ledPin, LOW);
+      request->send(SPIFFS, "/index.html", "text/html", false, processor); });
+        server.begin();
     }
-    // send event with message "hello!", id current millis
-    // and set reconnect delay to 1 second
-    client->send("hello!", NULL, millis(), 10000); });
-    server.addHandler(&events);
+    else
+    {
+        // Connect to Wi-Fi network with SSID and password
+        Serial.println("Setting AP (Access Point)");
+        // NULL sets an open Access Point
+        WiFi.softAP("ESP32-WIFI-MANAGER", NULL);
 
-    // Start server
-    server.begin();
+        IPAddress IP = WiFi.softAPIP();
+        Serial.print("AP IP address: ");
+        Serial.println(IP);
+
+        // Web Server Root URL
+        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+                  { request->send(SPIFFS, "/wifimanager.html", "text/html"); });
+
+        server.serveStatic("/", SPIFFS, "/");
+        server.on("/", HTTP_POST, [](AsyncWebServerRequest *request)
+                  {
+      int params = request->params();
+      for(int i = 0;i < params;i++){
+        AsyncWebParameter* p = request->getParam(i);
+        if(p -> isPost()){
+          // HTTP POST ssid value
+          if (p->name() == PARAM_INPUT_1) {
+            ssid = p->value().c_str();
+            Serial.print("SSID set to: ");
+            Serial.println(ssid);
+            // Write file to save value
+            json["ssid"] = ssid.c_str();
+            //writeFile(SPIFFS, ssidPath, ssid.c_str());
+          }
+          // HTTP POST pass value
+          if (p->name() == PARAM_INPUT_2) {
+            pass = p->value().c_str();
+            Serial.print("Password set to: ");
+            Serial.println(pass);
+            // Write file to save value
+            json["pass"] = pass.c_str();
+            //writeFile(SPIFFS, passPath, pass.c_str());
+          }
+          // HTTP POST ip value
+          if (p->name() == PARAM_INPUT_3) {
+            ip = p->value().c_str();
+            Serial.print("IP Address set to: ");
+            Serial.println(ip);
+            // Write file to save value
+            json["ip"] = ip.c_str();
+            //writeFile(SPIFFS, ipPath, ip.c_str());
+          }
+          // HTTP POST gateway value
+          if (p->name() == PARAM_INPUT_4) {
+            gw = p->value().c_str();
+            Serial.print("Gateway set to: ");
+            Serial.println(gw);
+            // Write file to save value
+            json["gw"] = gw.c_str();
+            //writeFile(SPIFFS, gatewayPath, gateway.c_str());
+          }
+          // save json to flash file
+          writeFile(SPIFFS, wificonfigPath, JSON.stringify(json).c_str());
+          //Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
+        }
+      }
+      request->send(200, "text/plain", "Done. ESP will restart, connect to your router and go to IP address: " + ip);
+      delay(3000);
+      ESP.restart(); });
+        server.begin();
+    }
 }
 
 void loop()
 {
+    if (Serial.available())
+    {
+        String read = Serial.readString();
+        read.trim();
+        MatchState ms;
+        ms.Target((char *)read.c_str());
+        if (ms.Match("set ssid="))
+        {
+            ssid = read.substring(ms.MatchLength);
+            Serial.print("SSID set to: ");
+            Serial.println(ssid);
+            json["ssid"] = ssid.c_str();
+        }
+        else if (ms.Match("set password="))
+        {
+            pass = read.substring(ms.MatchLength);
+            Serial.print("Password set to: ");
+            Serial.println(pass);
+            json["pass"] = pass.c_str();
+        }
+        else if (ms.Match("set ip="))
+        {
+            ip = read.substring(ms.MatchLength);
+            Serial.print("IP Address set to: ");
+            Serial.println(ip);
+            json["ip"] = ip.c_str();
+        }
+        else if (ms.Match("set gw="))
+        {
+            gw = read.substring(ms.MatchLength);
+            Serial.print("Gateway set to: ");
+            Serial.println(gw);
+            json["gw"] = gw.c_str();
+        }
+        else if (ms.Match("save"))
+        {
+            writeFile(SPIFFS, wificonfigPath, JSON.stringify(json).c_str());
+            Serial.println("Config saved!");
+        }
+    }
     if ((millis() - lastTime) > timerDelay)
     {
         // Send Events to the client with the Sensor Readings Every 10 seconds

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>ESP32 Home IOT Wi-Fi Manager</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+
+<body>
+    <header>
+        <a href="https://github.com/gsirettito/">
+            <h1>ESP32 Home IOT Wi-Fi Manager</h1>
+        </a>
+    </header>
+    <div class="box">
+        <h2>Connect to</h2>
+        <p>Configure STA credentials</p>
+        <form action="/" method="POST">
+            <div class="inputBox">
+                <input type="text" id="ssid" name="ssid" required onkeyup="this.setAttribute('value', this.value);"
+                    value="">
+                <label>SSID</label>
+            </div>
+            <div class="inputBox">
+                <input type="password" id="pass" name="pass" required onkeyup="this.setAttribute('value', this.value);"
+                    value="">
+                <label>Password</label>
+            </div>
+            <div class="inputBox">
+                <input type="text" id="ip" name="ip" required onkeyup="this.setAttribute('value', this.value);"
+                    value="192.168.1.200">
+                <label>IP Address</label>
+            </div>
+            <div class="inputBox">
+                <input type="text" id="gateway" name="gateway" required
+                    onkeyup="this.setAttribute('value', this.value);" value="192.168.1.1">
+                <label>Gateway Address</label>
+            </div>
+            <input type="submit" value="Submit">
+            </p>
+        </form>
+    </div>
+</body>
+
+</html>
