@@ -136,6 +136,9 @@ bool initWiFi()
         Serial.println("STA Failed to configure");
         return false;
     }
+
+    WiFi.onEvent(WiFiStationConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
+
     WiFi.begin(ssid.c_str(), pass.c_str());
     Serial.print("Connecting to WiFi...");
 
@@ -182,56 +185,90 @@ String toStringIp(IPAddress ip)
 
 // checks if the request is for the controllers IP, if not we redirect automatically to the
 // captive portal
-boolean captivePortal()
+boolean captivePortal(AsyncWebServerRequest *request)
 {
-    if (!isIp(server.hostHeader()))
+    if (!isIp(request->host()))
     {
         Serial.println("Request redirected to captive portal");
-        server.sendHeader("Location", String("http://") + toStringIp(server.client().localIP()), true);
-        server.send(302, "text/plain", "");
-        server.client().stop();
+        AsyncWebServerResponse *response = request->beginResponse(302, "text/plain", "");
+        response->addHeader("Location", String("http://") + toStringIp(request->client()->localIP()));
+        request->send(response);
+        request->client()->stop();
         return true;
     }
     return false;
 }
 
-void handleRoot()
+void handleRoot(AsyncWebServerRequest *request)
 {
-    if (captivePortal())
+    if (captivePortal(request))
     {
         return;
     }
-    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    server.sendHeader("Pragma", "no-cache");
-    server.sendHeader("Expires", "-1");
-
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-              { request->send(SPIFFS, "/wifimanager.html", "text/html"); });
+    AsyncWebServerResponse *response = request->beginResponse(SPIFFS, "/wifimanager.html", "text/html");
+    response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    response->addHeader("Pragma", "no-cache");
+    response->addHeader("Expires", "-1");
+    request->send(response);
 }
 
-void handleNotFound()
+void handleNotFound(AsyncWebServerRequest *request)
 {
-    if (captivePortal())
+    if (captivePortal(request))
     {
         return;
     }
     String message = F("File Not Found\n\n");
     message += F("URI: ");
-    message += server.uri();
+    message += request->url();
     message += F("\nMethod: ");
-    message += (server.method() == HTTP_GET) ? "GET" : "POST";
+    message += (request->method() == HTTP_GET) ? "GET" : "POST";
     message += F("\nArguments: ");
-    message += server.args();
+    message += request->args();
     message += F("\n");
 
-    for (uint8_t i = 0; i < server.args(); i++)
+    for (uint8_t i = 0; i < request->args(); i++)
     {
-        message += String(F(" ")) + server.argName(i) + F(": ") + server.arg(i) + F("\n");
+        message += String(F(" ")) + request->argName(i) + F(": ") + request->arg(i) + F("\n");
     }
-    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    server.sendHeader("Pragma", "no-cache");
-    server.sendHeader("Expires", "-1");
-    server.send(404, "text/plain", message);
+
+    AsyncWebServerResponse *response = request->beginResponse(404, "text/plain", message);
+    response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    response->addHeader("Pragma", "no-cache");
+    response->addHeader("Expires", "-1");
+    request->send(response);
+}
+
+// wifi OnConnected event
+void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info)
+{
+    Serial.println("Connected to AP!");
+
+    Serial.print("SSID Length: ");
+    Serial.println(info.wifi_sta_connected.ssid_len);
+
+    Serial.print("SSID: ");
+    for (int i = 0; i < info.wifi_sta_connected.ssid_len; i++)
+    {
+        Serial.print((char)info.wifi_sta_connected.ssid[i]);
+    }
+
+    Serial.print("\nBSSID: ");
+    for (int i = 0; i < 6; i++)
+    {
+        Serial.printf("%02X", info.wifi_sta_connected.bssid[i]);
+
+        if (i < 5)
+        {
+            Serial.print(":");
+        }
+    }
+
+    Serial.print("\nChannel: ");
+    Serial.println(info.wifi_sta_connected.channel);
+
+    Serial.print("Auth mode: ");
+    Serial.println(info.wifi_sta_connected.authmode);
 }
 
 // Replaces placeholder with LED state value
@@ -315,7 +352,8 @@ void setup()
 
         // Web Server Root URL
         /* Setup the web server */
-        server.on("/", handleRoot);
+        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+                  { handleRoot(request); });
 
         server.serveStatic("/", SPIFFS, "/");
         server.on("/", HTTP_POST, [](AsyncWebServerRequest *request)
@@ -420,5 +458,5 @@ void loop()
     // DNS
     dnsServer.processNextRequest();
     // HTTP
-    server.handleClient();
+    // server.handleClient();
 }
