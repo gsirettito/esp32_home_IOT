@@ -36,9 +36,20 @@
                 <label>IP Address</label>
             </div>
             <div class="inputBox">
+                <input type="text" id="netmask" name="netmask" required
+                    onkeyup="this.setAttribute('value', this.value);" value="255.255.255.0">
+                <label>Netmask</label>
+            </div>
+            <div class="inputBox">
                 <input type="text" id="gateway" name="gateway" required
                     onkeyup="this.setAttribute('value', this.value);" value="192.168.1.1">
                 <label>Gateway Address</label>
+            </div>
+            <div class="inputBox">
+                <input type="text" id="bot_token" name="bot_token" required
+                    onkeyup="this.setAttribute('value', this.value);"
+                    value="XXXXXXXXX:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX">
+                <label>Telegram Bot Token</label>
             </div>
             <input type="submit" value="Submit">
             </p>

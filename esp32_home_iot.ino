@@ -3,27 +3,47 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include "SPIFFS.h"
-#include <Arduino_JSON.h>
+#include <ArduinoJson.h>
 #include <Regexp.h>
 #include <DNSServer.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <ESP32Ping.h>
+
+const char *remote_host = "www.google.com";
+
+// Telegram BOT Token (Get from Botfather)
+String telegram_bot_token; //"XXXXXXXXX:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+const unsigned long BOT_MTBS = 1000; // mean time between scan messages
+
+WiFiClientSecure secured_client;
+UniversalTelegramBot bot(telegram_bot_token, secured_client);
+unsigned long bot_lasttime; // last time messages' scan has been done
 
 // Search for parameter in HTTP POST request
 const char *PARAM_INPUT_1 = "ssid";
 const char *PARAM_INPUT_2 = "pass";
 const char *PARAM_INPUT_3 = "ip";
 const char *PARAM_INPUT_4 = "gateway";
+const char *PARAM_INPUT_5 = "netmask";
+const char *PARAM_INPUT_6 = "bot_token";
 
 // Variables to save values from HTML form
 String wificonfig;
 String ssid;
 String pass;
 String ip;
+String netmask;
 String gw;
 
 // File paths to save input values permanently
 const char *wificonfigPath = "/wificonfig.json";
+const char *telegramBotTokenPath = "/token";
 
 const char *softAP_ssid = "ESP32-WIFI-MANAGER";
+
+WiFiEventId_t eventID;
 
 IPAddress localIP;
 // IPAddress localIP(192, 168, 1, 200); // hardcoded
@@ -31,7 +51,7 @@ IPAddress localIP;
 // Set your Gateway IP address
 IPAddress localGateway;
 // IPAddress localGateway(192, 168, 1, 1); //hardcoded
-IPAddress subnet(255, 255, 0, 0);
+IPAddress subnet(255, 255, 255, 0);
 
 // The access points IP address and net mask
 // It uses the default Google DNS IP address 8.8.8.8 to capture all
@@ -54,7 +74,7 @@ AsyncWebServer server(80);
 AsyncEventSource events("/events");
 
 // Json Variable to manage wifi config
-JSONVar json;
+DynamicJsonDocument json(200);
 
 // Timer variables
 unsigned long lastTime = 0;
@@ -131,6 +151,7 @@ bool initWiFi()
     WiFi.mode(WIFI_STA);
     localIP.fromString(ip.c_str());
     localGateway.fromString(gw.c_str());
+    subnet.fromString(netmask.c_str());
     if (!WiFi.config(localIP, localGateway, subnet))
     {
         Serial.println("STA Failed to configure");
@@ -144,11 +165,11 @@ bool initWiFi()
         Serial.println("IP address: ");
         Serial.println(IPAddress(info.got_ip.ip_info.ip.addr)); },
                  WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
-    WiFiEventId_t eventID = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
-                                         {
+    eventID = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
+                           {
         Serial.print("WiFi lost connection. Reason: ");
         Serial.println(info.wifi_sta_disconnected.reason); },
-                                         WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+                           WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 
     WiFi.begin(ssid.c_str(), pass.c_str());
     Serial.print("Connecting to WiFi...");
@@ -300,6 +321,42 @@ String processor(const String &var)
     return String();
 }
 
+// Telegram bot handle messages
+void handleNewMessages(int numNewMessages)
+{
+    Serial.print("handleNewMessages ");
+    Serial.println(numNewMessages);
+
+    String answer;
+    for (int i = 0; i < numNewMessages; i++)
+    {
+        telegramMessage &msg = bot.messages[i];
+        Serial.println("Received " + msg.text);
+        if (msg.text == "/help")
+            answer = "So you need _help_, uh? me too! use /start or /status";
+        else if (msg.text == "/start")
+            answer = "Welcome my new friend! You are the first *" + msg.from_name + "* I've ever met";
+        else if (msg.text == "/status")
+            answer = "All is good here, thanks for asking!";
+        else
+            answer = "Say what?";
+
+        bot.sendMessage(msg.chat_id, answer, "Markdown");
+    }
+}
+
+void bot_setup()
+{
+    bot.updateToken(telegram_bot_token);
+    const String commands = F("["
+                              "{\"command\":\"help\",  \"description\":\"Get bot usage help\"},"
+                              "{\"command\":\"start\", \"description\":\"Message sent when you open a chat with a bot\"},"
+                              "{\"command\":\"status\",\"description\":\"Answer device current status\"}" // no comma on last command
+                              "]");
+    bot.setMyCommands(commands);
+    // bot.sendMessage("25235518", "Hola amigo!", "Markdown");
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -310,16 +367,21 @@ void setup()
     pinMode(ledPin, OUTPUT);
     digitalWrite(ledPin, LOW);
 
+    secured_client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
+
     // Load values saved in SPIFFS
     wificonfig = readFile(SPIFFS, wificonfigPath);
-    json = JSON.parse(wificonfig);
+    telegram_bot_token = readFile(SPIFFS, telegramBotTokenPath);
+    deserializeJson(json, wificonfig);
     ssid = (const char *)json["ssid"];
     pass = (const char *)json["pass"];
     ip = (const char *)json["ip"];
+    netmask = (const char *)json["netmask"];
     gw = (const char *)json["gw"];
     Serial.println(ssid);
     Serial.println(pass);
     Serial.println(ip);
+    Serial.println(netmask);
     Serial.println(gw);
 
     if (initWiFi())
@@ -342,9 +404,38 @@ void setup()
       digitalWrite(ledPin, LOW);
       request->send(SPIFFS, "/index.html", "text/html", false, processor); });
         server.begin();
+
+        Serial.print("Retrieving time: ");
+        configTime(0, 0,
+                   "0.north-america.pool.ntp.org",
+                   "1.north-america.pool.ntp.org",
+                   "2.north-america.pool.ntp.org"); // get UTC time via NTP
+        // time_t now = time(nullptr);
+        // while (now < 24 * 3600)
+        // {
+        //     Serial.println(now);
+        //     delay(100);
+        //     now = time(nullptr);
+        // }
+        // Serial.println(now);
+
+        bot_setup();
+
+        Serial.print("Pinging host ");
+        Serial.println(remote_host);
+
+        if (Ping.ping(remote_host))
+        {
+            Serial.println("Success!!");
+        }
+        else
+        {
+            Serial.println("Error :(");
+        }
     }
     else
     {
+        WiFi.removeEvent(eventID);
         // Connect to Wi-Fi network with SSID and password
         Serial.println("Setting AP (Access Point)");
         // NULL sets an open Access Point
@@ -409,8 +500,27 @@ void setup()
             json["gw"] = gw.c_str();
             //writeFile(SPIFFS, gatewayPath, gateway.c_str());
           }
+          // HTTP POST netmask value
+          if (p->name() == PARAM_INPUT_5) {
+            netmask = p->value().c_str();
+            Serial.print("Netmask set to: ");
+            Serial.println(netmask);
+            // Write file to save value
+            json["netmask"] = netmask.c_str();
+            //writeFile(SPIFFS, gatewayPath, gateway.c_str());
+          }
+          // HTTP POST token value
+          if (p->name() == PARAM_INPUT_6) {
+            telegram_bot_token = p->value().c_str();
+            Serial.print("Telegram bot Token set to: ");
+            Serial.println(telegram_bot_token);
+            // Write file to save value
+            writeFile(SPIFFS, telegramBotTokenPath, telegram_bot_token.c_str());
+          }
           // save json to flash file
-          writeFile(SPIFFS, wificonfigPath, JSON.stringify(json).c_str());
+          String out;
+          serializeJson(json, out);
+          writeFile(SPIFFS, wificonfigPath, out.c_str());
           //Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
         }
       }
@@ -460,14 +570,49 @@ void loop()
             Serial.println(gw);
             json["gw"] = gw.c_str();
         }
+        else if (ms.Match("set netmask="))
+        {
+            netmask = read.substring(ms.MatchLength);
+            Serial.print("Netmask set to: ");
+            Serial.println(netmask);
+            json["netmask"] = netmask.c_str();
+        }
+        else if (ms.Match("set bot_token="))
+        {
+            telegram_bot_token = read.substring(ms.MatchLength);
+            Serial.print("Telegram bot Token set to: ");
+            Serial.println(telegram_bot_token);
+            writeFile(SPIFFS, telegramBotTokenPath, telegram_bot_token.c_str());
+        }
         else if (ms.Match("save"))
         {
-            writeFile(SPIFFS, wificonfigPath, JSON.stringify(json).c_str());
+            String out;
+            serializeJson(json, out);
+            writeFile(SPIFFS, wificonfigPath, out.c_str());
             Serial.println("Config saved!");
+        }
+        else if (ms.Match("reload"))
+        {
+            Serial.println("Reloading device....");
+            ESP.restart();
         }
     }
     // DNS
     dnsServer.processNextRequest();
     // HTTP
     // server.handleClient();
+
+    if (millis() - bot_lasttime > BOT_MTBS)
+    {
+        int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+
+        while (numNewMessages)
+        {
+            Serial.println("got response");
+            handleNewMessages(numNewMessages);
+            numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+        }
+
+        bot_lasttime = millis();
+    }
 }
